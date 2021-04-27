@@ -122,8 +122,8 @@ asvdatFiltered <- as.data.frame(read.csv('ASVtable.csv', head=T)) %>%
     #make presence/absence
     asvFilter[asvFilter>0] <-1  
     
-    #remove these
-    asvFilter$Total.Reads <- NULL #not sure how these survived the filter
+    #remove these columns
+    asvFilter$Total.Reads <- NULL
     asvFilter$NA. <- NULL
     
     #riketsia is in every tick
