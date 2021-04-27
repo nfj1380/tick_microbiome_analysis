@@ -10,7 +10,6 @@ library(biomformat)
 ########################################################################################################################
 #---------------------Data preparation--------------------------
 ########################################################################################################################
-library(tidyverse)
 
 #import data
 envdat <- read.csv('tick_env_final_data_namesFixedMar2021.csv', head=T)
@@ -59,9 +58,9 @@ asvdatFiltered <- as.data.frame(read.csv('ASVtable.csv', head=T)) %>%
   #streamline data
 
     #no need for long/lat in main predictor set
-    envData_final$latitude <- NULL
-    envData_final$longitude <- NULL
-    envData_final$season <- NULL
+   # envData_final$latitude <- NULL
+    #envData_final$longitude <- NULL
+    #envData_final$season <- NULL
     
   #reduce to predictor set and test for correlations
     envData_final_predictors <- envData_final[11:101]
@@ -98,7 +97,8 @@ asvdatFiltered <- as.data.frame(read.csv('ASVtable.csv', head=T)) %>%
     filter_obj <- prep(corr_filter, training = envData_final_noNA)
     
    envData_uncor<- bake(filter_obj, envData_final_noNA) #extract final data
-    
+   
+   envData_uncor_WC <-cbind(envData_uncor, sex=envData_final$sex)
     
  #' Gather metadata
     ## ------------------------------------------------------------------------
@@ -125,6 +125,10 @@ asvdatFiltered <- as.data.frame(read.csv('ASVtable.csv', head=T)) %>%
     #remove these
     asvFilter$Total.Reads <- NULL #not sure how these survived the filter
     asvFilter$NA. <- NULL
+    
+    #riketsia is in every tick
+    asvFilter$Rickettsia <- NULL
+    
     #not sure about removing taxa yet....
     #sum rows
     #asvFilter$new <- rowSums(t(asvFilter )))
@@ -132,101 +136,6 @@ asvdatFiltered <- as.data.frame(read.csv('ASVtable.csv', head=T)) %>%
     #asvFilterNoCommon <-subset(otuFilter, new < 45)
     #remove 'new' sort column
     #otuFilterNoCommon$new <- NULL
-#-----------------------------------------------------------------------------
-#################HMSC Analysis s#################
-#-----------------------------------------------------------------------------
-    
-library(Hmsc)
-set.seed(29698)
-
-#Turn into matrices 
-YMat<-as.matrix(asvFilter)
-XMat<-model.matrix(~.,data=envData_uncor)
-
-
-str(randonEff_f)
-
-xycoords <- as.matrix(cbind(as.numeric(randonEff$latitude),as.numeric(randonEff$longitude ))) #needs to be a matrix
-
-#drop unused levels
-randonEff$site <- droplevels(randonEff$site)
-
-row.names(xycoords) <- randonEff$site
-#get data into right format
-
-#add some random noise to make each tick have unique coordinates (0.0001)
-
-p <- runif(355, 0.00001, 0.00002)
-xycoords_n <- xycoords[,]+p
-
-rL <-  HmscRandomLevel (sData = xycoords_n) #adding spatial component
-studyDesign <- data.frame(sample = as.factor(randonEff$site)) #adding site random effect
-
-m <-  Hmsc(Y = YMat, XData = as.data.frame(XMat), XFormula = ~XMat, distr="probit",
-           studyDesign = studyDesign, ranLevels=list("sample"=rL) ) #probit model for pa data
-
-#mcmc characteristics
-nChains = 2
-thin = 5
-samples = 1000
-transient = 500*thin
-verbose = 500*thin
-
-#run model
-m1 <- sampleMcmc(m, thin = thin, samples = samples, transient = transient,
-               nChains = nChains, verbose = verbose)
-
-
-saveRDS(m1, file = "m1.rds")
-
-
-preds.spatial = computePredictedValues(m1)
-MF.spatial = evaluateModelFit(hM=m1, predY=preds.spatial)
-MF.spatial
-
-#problem is sites have the same spatial coordinates
-#check mcmc diagnostics
-mpost <- convertToCodaObject(m1)
-summary(mpost$Beta)
-effectiveSize(mpost$Beta)
-gelman.diag(mpost$Beta,multivariate=FALSE)$psrf
-
-
-# check R2 etc
-preds <- computePredictedValues(m1)
-evaluateModelFit(hM=m1, predY=preds)
-
-#plot paramters
-plot(mpost$Beta)
-
-#plot betas
-postBeta = getPostEstimate(m1, parName = "Beta")
-par(mar=c(5,11,2.5,0))
-plotBeta(m1,
-         post = postBeta, 
-         plotTree = F,
-         spNamesNumbers = c(T,F))
-#only signif parameters
-
-plotBeta(m1, 
-         post = postBeta,
-         param = "Mean",
-         plotTree = F,  
-         spNamesNumbers = c(T,F))
-
-VP <-  computeVariancePartitioning(m1)
-par(mar=c(4,4,4,4))
-plotVariancePartitioning(m1, VP = VP,
-                         las = 2, horiz=F)
-
-### Mixing object
-mixing <- as.mcmc(m1, parameters = "paramX")
-### Draw trace and density plots for all combination of parameters
-plot(mixing)
-
-#formprior <- as.HMSCprior(formdata1)
-#formparam <- as.HMSCparam(formdata1, formprior)
-
 
 #-----------------------------------------------------------------------------
 #################CMRF analysis#################
@@ -236,26 +145,29 @@ library(MRFcov)
 #' 
 #' Extract coordinates columns to use for incorporating spatial splines as covariates in the model (for now, these need to be named `Latitude` and `Longitude`)
 ## ----message=FALSE, warning=FALSE----------------------------------------
-Latitude <- mooseMB$Capture.Location.UTM.Easting
-mooseMB$Capture.Location.UTM.Easting <- NULL
-Longitude <- mooseMB$Capture.Location.UTM.Northing
-mooseMB$Capture.Location.UTM.Northing <- NULL
+Latitude <- envData_final$latitude
+    envData_final$latitude <- NULL
+Longitude <- envData_final$longitude
+envData_final$longitude <- NULL
 coords <- (data.frame(Latitude = Latitude,
                       Longitude = Longitude))
 
-#' 
+
 #' Prep the remaining covariates for CRF analysis. Here, we change categorical covariates to model matrix format and scale numeric covariates to unit variance
 ## ----message=FALSE, warning=FALSE----------------------------------------
-mooseMB$Sex <- as.factor(mooseMB$Sex)
+envData_uncor_WC$sex <- as.factor(envData_uncor_WC$sex)
 
-library(dplyr)
-mooseMB %>%
-  cbind(.,data.frame(model.matrix(~.[,'Sex'],.)[,-1])) %>%
-  dplyr::select(-Sex) %>%
+str(envData_uncor_WC)
+
+envData_uncor_WC %>%
+  cbind(.,data.frame(model.matrix(~.[,'sex'],.)[,-1])) %>%
+  dplyr::select(-sex) %>%
   dplyr::rename_all(funs(gsub("\\.|model.matrix", "", .))) %>%
-  dplyr::mutate_at(vars(CaptureDate:BodyCondition),
+  dplyr::mutate_at(vars(vpdmax:tdmean),
                    funs(as.vector(scale(.)))) -> analysis.data
 
+analysis.data$sexNA <- NULL
+analysis.data$sexS <- NULL
 #' 
 #' We also create a dataset for non-spatial analysis for comparisons. For this, we add the `Latitude` and `Longitude` columns back in and scale them to unit variance
 ## ----message=FALSE, warning=FALSE----------------------------------------
@@ -265,18 +177,55 @@ analysis.data %>%
   dplyr::mutate_at(vars(Latitude, Longitude),
                    funs(as.vector(scale(.)))) -> analysis.data.nonspatial
 
+
+## ------------------------------------------------------------------------
+# Generate a one-hot encoded site design matrix
+## ------------------------------------------------------------------------
+
+site_re <- mgcv::smooth.construct2(object = mgcv::s(Site_Code,
+                                                    bs = "re"),
+                                   data = envData_final, knots = NULL)
+site_designmat <- data.frame(site_re$X)
+colnames(site_designmat) <- paste0('site', 1:ncol(site_designmat))
+head(site_designmat)
+
+# Prep the data for CRF by cross-multiplication
+nodes = 4 #number of species
+
+data_prepped <- MRFcov::prep_MRF_covariates(data = asvFilter[,1:nodes], n_nodes = nodes) 
+head(data_prepped)
+
+
+# Add back in the site design matrix. This ensures the CRF coefficients are estimated conditionally on the 
+# site effect
+
+
+data_prepped_covar <- cbind(data_prepped, t=analysis.data[,1])
+
+data_prepped_withSite <- cbind(data_prepped_covar, site_designmat)
+
+#' 
+
 #' 
 #' Now we generate MRF and CRF models to determine which model fits the data most appropriately. First, the nonspatial MRF (without covariates)
 ## ------------------------------------------------------------------------
-moose.mrf <- MRFcov(data = analysis.data.nonspatial[,1:nodes], 
+tick.crf <- MRFcov(data = data_prepped_covar, 
                     n_nodes = nodes, family = 'binomial',
-                    n_cores = 3)
+                    n_cores = 3, n_covariates = 17, prep_covariates = FALSE
+                    )
+plotMRF_hm(tick.mrf,  plot_observed_vals = TRUE, data = data_prepped)
+
+# Fit the model. Be sure to explicitly state how many covariates there were prior to prepping (1 in this case)
+crf <- MRFcov(data = data_prepped, 
+              n_covariates = 1, family = 'binomial')
+tick.mrf$direct_coefs
+tick.mrf$indirect_coefs
 
 #' 
 #' Use this model to generate predictions
 ## ------------------------------------------------------------------------
-mrf.predictions <- predict_MRF(data = analysis.data.nonspatial[,1:nodes],
-                               MRF_mod = moose.mrf)
+mrf.predictions <- predict_MRF(data = data_prepped[,1:nodes],
+                               MRF_mod = tick.mrf)
 
 #' 
 
@@ -343,5 +292,105 @@ spatial.cv <- do.call(rbind, spatial.cv)
 quantile(mrf.cv$mean_tot_pred, probs = c(0.025, 0.5, 0.975))
 quantile(crf.cv$mean_tot_pred, probs = c(0.025, 0.5, 0.975))
 quantile(spatial.cv$mean_tot_pred, probs = c(0.025, 0.5, 0.975))
-      
-      
+
+
+
+
+
+
+
+
+#-----------------------------------------------------------------------------
+#################HMSC Analysis s#################
+#-----------------------------------------------------------------------------
+
+library(Hmsc)
+set.seed(29698)
+
+#Turn into matrices 
+YMat<-as.matrix(asvFilter)
+XMat<-model.matrix(~.,data=envData_uncor)
+
+
+str(randonEff_f)
+
+xycoords <- as.matrix(cbind(as.numeric(randonEff$latitude),as.numeric(randonEff$longitude ))) #needs to be a matrix
+
+#drop unused levels
+randonEff$site <- droplevels(randonEff$site)
+
+row.names(xycoords) <- randonEff$site
+#get data into right format
+
+#add some random noise to make each tick have unique coordinates (0.0001)
+
+p <- runif(355, 0.00001, 0.00002)
+xycoords_n <- xycoords[,]+p
+
+rL <-  HmscRandomLevel (sData = xycoords_n) #adding spatial component
+studyDesign <- data.frame(sample = as.factor(randonEff$site)) #adding site random effect
+
+m <-  Hmsc(Y = YMat, XData = as.data.frame(XMat), XFormula = ~XMat, distr="probit",
+           studyDesign = studyDesign, ranLevels=list("sample"=rL) ) #probit model for pa data
+
+#mcmc characteristics
+nChains = 2
+thin = 5
+samples = 1000
+transient = 500*thin
+verbose = 500*thin
+
+#run model
+m1 <- sampleMcmc(m, thin = thin, samples = samples, transient = transient,
+                 nChains = nChains, verbose = verbose)
+
+
+saveRDS(m1, file = "m1.rds")
+
+
+preds.spatial = computePredictedValues(m1)
+MF.spatial = evaluateModelFit(hM=m1, predY=preds.spatial)
+MF.spatial
+
+#problem is sites have the same spatial coordinates
+#check mcmc diagnostics
+mpost <- convertToCodaObject(m1)
+summary(mpost$Beta)
+effectiveSize(mpost$Beta)
+gelman.diag(mpost$Beta,multivariate=FALSE)$psrf
+
+
+# check R2 etc
+preds <- computePredictedValues(m1)
+evaluateModelFit(hM=m1, predY=preds)
+
+#plot paramters
+plot(mpost$Beta)
+
+#plot betas
+postBeta = getPostEstimate(m1, parName = "Beta")
+par(mar=c(5,11,2.5,0))
+plotBeta(m1,
+         post = postBeta, 
+         plotTree = F,
+         spNamesNumbers = c(T,F))
+#only signif parameters
+
+plotBeta(m1, 
+         post = postBeta,
+         param = "Mean",
+         plotTree = F,  
+         spNamesNumbers = c(T,F))
+
+VP <-  computeVariancePartitioning(m1)
+par(mar=c(4,4,4,4))
+plotVariancePartitioning(m1, VP = VP,
+                         las = 2, horiz=F)
+
+### Mixing object
+mixing <- as.mcmc(m1, parameters = "paramX")
+### Draw trace and density plots for all combination of parameters
+plot(mixing)
+
+#formprior <- as.HMSCprior(formdata1)
+#formparam <- as.HMSCparam(formdata1, formprior)      
