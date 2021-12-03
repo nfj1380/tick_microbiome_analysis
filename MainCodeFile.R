@@ -16,7 +16,7 @@ envdat <- read.csv('tick_env_final_data_namesFixedMar2021.csv', head=T)
 envdatSort <- envdat[order(envdat$Site_Code),]
 
 asvdatFiltered <- as.data.frame(read.csv('ASVtable.csv', head=T)) %>% 
-   filter(!Site.Code.Name...Year == "BRACHYSPRIA") %>% 
+   filter(!Site.Code.Name...Year == "BRACHYSPRIA") %>% #splatter control %>% 
    filter(!Site.Code.Name...Year == "BLANK") %>%  #blanks
    filter(!Site.Code.Name...Year == "WL19") %>% #site not sampled in the end
    filter(!Site.Code.Name...Year == "WT17")  
@@ -51,7 +51,7 @@ asvdatFiltered <- as.data.frame(read.csv('ASVtable.csv', head=T)) %>%
     indiv <- c(1:355)
     # as matrix
     randonEff <- as.data.frame(cbind(indiv, plate=finalASVdat$Plate.Code, year=finalASVdat$Sample.Collection.Year, site=finalASVdat$Site.Code.Only, latitude= envData_repsID$latitude, longitude=envData_repsID$longitude, season=envData_final$season ))
-    #as factor dataframe
+    #as factor data frame
     randonEff_f <- data.frame(indiv, plate=finalASVdat$Plate.Code, year=finalASVdat$Sample.Collection.Year, site=finalASVdat$Site.Code.Only, latitude= envData_repsID$latitude, longitude=envData_repsID$longitude, season=envData_final$season)
 #--------------------------------------------------------------------------------------------------
     
@@ -69,8 +69,8 @@ asvdatFiltered <- as.data.frame(read.csv('ASVtable.csv', head=T)) %>%
 #--------------------------------------------------------------------------------------------------    
 #Predictor summary and correlations
     
-    library(DataExplorer)
-    create_report(envData_final_predictors ) #produces an html report
+   # library(DataExplorer)
+   # create_report(envData_final_predictors ) #produces an html report
 
     #not too much missing data - lets impute!
   library(missForest)
@@ -86,19 +86,31 @@ asvdatFiltered <- as.data.frame(read.csv('ASVtable.csv', head=T)) %>%
 
   #tidymodel way  -adapted! removes less predictors than caret version. 16 predictors at 0.7 cor coefficent threshold
     
+    library(GGally)
+    
+    ggpairs(envData_final_noNA)
+    ggcorr(envData_final_noNA)
+    
     library(tidymodels)
     
-    rec <- recipe( tdmean  ~ .,
+    rec <- recipe( vpdmax   ~ .,
                   data = envData_final_noNA, retain = TRUE)
     
     corr_filter <- rec %>%
-      step_corr(all_predictors(), threshold = .7)
+      step_corr(all_predictors(), threshold = .8)
     
     filter_obj <- prep(corr_filter, training = envData_final_noNA)
     
    envData_uncor<- bake(filter_obj, envData_final_noNA) #extract final data
    
-   envData_uncor_WC <-cbind(envData_uncor, sex=envData_final$sex)
+   corCheck <- cor(envData_uncor)
+   
+   envData_uncor_simp <- envData_uncor
+   envData_uncor_simp[13:19] <- NULL
+   envData_uncor_WC <-cbind(envData_uncor_simp, sex=envData_final$sex)
+   
+   
+   #want to include tmax too (need to remove)
     
  #' Gather metadata
     ## ------------------------------------------------------------------------
@@ -118,27 +130,25 @@ asvdatFiltered <- as.data.frame(read.csv('ASVtable.csv', head=T)) %>%
 #To make a table containing only phyla with at least 10% abundance in any one sample and were observed at any abundance in at least 10% of samples. Convert the table to presence / absence and remove OTUs that are too common for analysis
     ## ------------------------------------------------------------------------
     asvFilter <- as.data.frame(t(filter_taxa(as.data.frame(t(finalASVdataRefined)), abundance=0.05, persistence =5)))
+    asvFilter_230asv <- as.data.frame(t(filter_taxa(as.data.frame(t(finalASVdataRefined)), abundance=0.01, persistence =2.5)))
+  #this threshold works best for mrf
+    #riketsia is in every female tick and quite common in males too. 600 read threshold
+    asvFilter_230asv$Rickettsia[asvFilter_230asv$Rickettsia<600] <- 0
+    asvFilter_230asv$Rickettsia[asvFilter_230asv$Rickettsia>600] <- 1
+    
+    #remove the positive control for splatter from the ASV table too.
+    asvFilter_230asv$Brachyspira <- NULL
     
     #make presence/absence
-    asvFilter[asvFilter>0] <-1  
+    asvFilter_230asv[asvFilter_230asv>0] <- 1  
     
     #remove these columns
-    asvFilter$Total.Reads <- NULL
-    asvFilter$NA. <- NULL
-    
-    #riketsia is in every tick
-    asvFilter$Rickettsia <- NULL
-    
-    #not sure about removing taxa yet....
-    #sum rows
-    #asvFilter$new <- rowSums(t(asvFilter )))
-    #remove all common OTUs
-    #asvFilterNoCommon <-subset(otuFilter, new < 45)
-    #remove 'new' sort column
-    #otuFilterNoCommon$new <- NULL
+    asvFilter_230asv$Total.Reads <- NULL
+    asvFilter_230asv$NA. <- NULL
+  
 
 #-----------------------------------------------------------------------------
-#################CMRF analysis#################
+#################MRF analysis#################
 #---------------------------------------------------------------------------
 library(MRFcov)
 
@@ -146,7 +156,7 @@ library(MRFcov)
 #' Extract coordinates columns to use for incorporating spatial splines as covariates in the model (for now, these need to be named `Latitude` and `Longitude`)
 ## ----message=FALSE, warning=FALSE----------------------------------------
 Latitude <- envData_final$latitude
-    envData_final$latitude <- NULL
+    envData_final$latitude <- NULL #fix this
 Longitude <- envData_final$longitude
 envData_final$longitude <- NULL
 coords <- (data.frame(Latitude = Latitude,
@@ -157,7 +167,6 @@ coords <- (data.frame(Latitude = Latitude,
 ## ----message=FALSE, warning=FALSE----------------------------------------
 envData_uncor_WC$sex <- as.factor(envData_uncor_WC$sex)
 
-str(envData_uncor_WC)
 
 envData_uncor_WC %>%
   cbind(.,data.frame(model.matrix(~.[,'sex'],.)[,-1])) %>%
@@ -175,69 +184,106 @@ analysis.data %>%
   dplyr::bind_cols(data.frame(Latitude = Latitude,
                               Longitude = Longitude)) %>%
   dplyr::mutate_at(vars(Latitude, Longitude),
-                   funs(as.vector(scale(.)))) -> analysis.data.nonspatial
+                   funs(as.vector(scale(.)))) -> analysis.data.spatial
 
+
+
+
+analysis.data.combined  <- cbind( asvFilter_230asv, analysis.data ) 
+
+# Prep the data for CRF by cross-multiplication
+nodes = 231 #number of species
 
 ## ------------------------------------------------------------------------
 # Generate a one-hot encoded site design matrix
 ## ------------------------------------------------------------------------
 
-site_re <- mgcv::smooth.construct2(object = mgcv::s(Site_Code,
-                                                    bs = "re"),
+site_re <- mgcv::smooth.construct(object = mgcv::s(Site_Code, bs = "re"),
                                    data = envData_final, knots = NULL)
+
+
 site_designmat <- data.frame(site_re$X)
 colnames(site_designmat) <- paste0('site', 1:ncol(site_designmat))
-head(site_designmat)
 
-# Prep the data for CRF by cross-multiplication
-nodes = 4 #number of species
+# How many covariates are there, assuming there are four nodes?
+n_covariates <- ncol(analysis.data)
 
-data_prepped <- MRFcov::prep_MRF_covariates(data = asvFilter[,1:nodes], n_nodes = nodes) 
-head(data_prepped)
+## ------------------------------------------------------------------------
+# Non-spatial MRF
+## ------------------------------------------------------------------------
+library(MRFcov)
 
+# Prep the data
+
+# Put site variables back in with the prepped data
+data_for_mrf_nonSpatial <- cbind(asvFilter_230asv, data.frame(site_designmat))
+
+# Fit the model
+tick_mrf_nonSpatial <- MRFcov(data = data_for_mrf_nonSpatial, n_nodes = nodes, family = 'binomial',
+              n_cores = 4)
+
+saveRDS(tick_mrf_nonSpatial, "mrf_model")
+
+# Inspect outputs
+tick_mrf_nonSpatial $intercepts
+plotMRF_hm(tick_mrf_nonSpatial )
+
+library(igraph)
+net <- graph.adjacency(tick_mrf_nonSpatial$graph, weighted = T, mode = "undirected")
+
+net_simplified_pos <- delete_edges(net, which(E(net)$weight< 0.15))
+
+plot.igraph(net_simplified_pos, layout = igraph::layout_with_mds(net_simplified_pos, dim=2),
+                    edge.width = abs(igraph::E(net_simplified_pos)$weight*4),
+                    vertex.size = 2,
+                    vertex.color = 'black',
+                    vertex.label.cex = 0.6,
+                    vertex.label.font=1,
+                    vertex.label.color='black',
+                    edge.color = ifelse(igraph::E(net_simplified_pos)$weight < 0, 
+                                        'blue',
+                                        'red'))
+
+net_simplified_neg <- delete_edges(net, which(E(net)$weight> -0.1))
+
+igraph::plot.igraph(net_simplified_neg , layout = igraph::layout_with_mds(net_simplified_neg , dim=2),
+                    edge.width = abs(igraph::E(net_simplified_neg )$weight*4),
+                    vertex.size = 2,
+                    vertex.color = 'black',
+                    vertex.label.cex = 0.6,
+                    vertex.label.font=3,
+                    vertex.label.color='black',
+                    edge.color = ifelse(igraph::E(net_simplified_neg )$weight < 0, 
+                                        'blue',
+                                        'red'))
+
+
+tick_mrf_nonSpatial $key_coefs$Borreliella #one group of interest
+
+tick_mrf_nonSpatial $key_coefs$Wolbachia #one group of interest - only shaped by  Streptococcus 
 
 # Add back in the site design matrix. This ensures the CRF coefficients are estimated conditionally on the 
 # site effect
 
-
-data_prepped_covar <- cbind(data_prepped, t=analysis.data[,1])
-
-data_prepped_withSite <- cbind(data_prepped_covar, site_designmat)
-
-#' 
-
-#' 
+write.csv(data_prepped_withSite,"data_prepped_withSite.csv", row.names = TRUE)
+ 
 #' Now we generate MRF and CRF models to determine which model fits the data most appropriately. First, the nonspatial MRF (without covariates)
 ## ------------------------------------------------------------------------
-tick.crf <- MRFcov(data = data_prepped_covar, 
-                    n_nodes = nodes, family = 'binomial',
-                    n_cores = 3, n_covariates = 17, prep_covariates = FALSE
-                    )
-plotMRF_hm(tick.mrf,  plot_observed_vals = TRUE, data = data_prepped)
-
-# Fit the model. Be sure to explicitly state how many covariates there were prior to prepping (1 in this case)
-crf <- MRFcov(data = data_prepped, 
-              n_covariates = 1, family = 'binomial')
-tick.mrf$direct_coefs
-tick.mrf$indirect_coefs
-
 #' 
 #' Use this model to generate predictions
 ## ------------------------------------------------------------------------
-mrf.predictions <- predict_MRF(data = data_prepped[,1:nodes],
-                               MRF_mod = tick.mrf)
-
-#' 
+mrf.predictions <- predict_MRF(data = data_for_mrf_nonSpatial[1:nodes],
+                               MRF_mod = tick_mrf_nonSpatial, prep_covariates = FALSE)
 
 #' 
 #' Test how well the MRF predicts the data by comparing the predicted to the observed values. Here, we split the data into five folds and test for model specificity, sensitivity, positive predictive value and proportion of true predictions using the `cv_MRF_diag` function
 ## ------------------------------------------------------------------------
 mrf.cv <- lapply(seq_len(100), function(x){
-  cv_MRF_diag(data = analysis.data.nonspatial[,1:nodes], n_nodes = nodes,
+  cv_MRF_diag(data = data_for_mrf_nonSpatial[,1:nodes], n_nodes = nodes,
               n_folds = 5,
-              n_cores = 1, family = 'binomial',
+              n_cores = 2, family = 'binomial',
               compare_null = FALSE, plot = FALSE,
-              cached_model = moose.mrf,
+              cached_model = tick_mrf_nonSpatial,
               cached_predictions = list(predictions = mrf.predictions),
               sample_seed = 10)
 })
@@ -246,59 +292,309 @@ mrf.cv <- do.call(rbind, mrf.cv)
 #' 
 #' Next, we repeat the above for a nonspatial CRF (including environmental covariates, but without spatial splines)
 ## ------------------------------------------------------------------------
-moose.crf <- MRFcov(data = analysis.data.nonspatial, 
-                    n_nodes = nodes, family = 'binomial',
-                    n_cores = 3)
-crf.predictions <- predict_MRF(data = analysis.data.nonspatial[,1:nodes],
-                               MRF_mod = moose.crf)
+# Prep the data
+
+data_nosite_prepped <- prep_MRF_covariates(data = analysis.data.combined , n_nodes = nodes)
+
+# Put site variables back in with the prepped data
+data_for_crf_non_spatial <- cbind(data_nosite_prepped, data.frame(site_designmat))
+
+# Fit the model
+tick_crf_non_spatial <- MRFcov(data =data_for_crf_non_spatial, n_nodes = nodes, family = 'binomial',
+                   prep_covariates = FALSE, n_covariates = n_covariates,
+                   n_cores = 4)
+
+saveRDS(tick_crf_non_spatial, 'tick_crf_nonspatial') 
+# Inspect outputs
+crf$intercepts
+plotMRF_hm(tick_crf )
+
+crf.predictions <- predict_MRF(data = data_for_crf_non_spatial,
+                               prep_covariates = F,
+                               MRF_mod = tick_crf_non_spatial)
+
 crf.cv <- lapply(seq_len(100), function(x){
-  cv_MRF_diag(data = analysis.data.nonspatial, n_nodes = nodes,
+  cv_MRF_diag(data = data_for_crf_non_spatial, n_nodes = nodes,
               n_folds = 5,
-              n_cores = 1, family = 'binomial',
+              n_cores = 3, family = 'binomial',
               compare_null = FALSE, plot = FALSE,
-              cached_model = moose.crf,
+              cached_model = tick_crf_non_spatial,
               cached_predictions = list(predictions = crf.predictions),
               sample_seed = 10)
 })
 crf.cv <- do.call(rbind, crf.cv)
 
+# Check how important each covariate is for predicting changing interactions
+# mean of covariate absolute effect sizes
+
+cov.imp.mean <- lapply(seq_along(tick_crf_non_spatial$indirect_coefs), function(x){
+  graph <- tick_crf_non_spatial$indirect_coefs[[x]][[1]]
+  coefs <- graph[upper.tri(graph)]
+  round(mean(abs(coefs[which(coefs != 0 )])), 4)
+})
+
+impData <- cbind(cov.imp.mean, names(analysis.data))
 #' 
 #' Next, we fit the spatial CRF. Here, the coordinates are used to produce spatial regression splines with the call 
 #' `mgcv::smooth.construct2(object = mgcv::s(Latitude, Longitude, bs = "gp"), data = coords, knots = NULL)`. Splines are a series of different equations pieced together, 
 #' which tends to increase the accuracy of interpolated values at the cost of  the ability to project outside the data range. These are highly appropriate here, as we are not interested in using them for prediction but more to account for non-independence in our observations. 
 ## ------------------------------------------------------------------------
-moose.crf.spatial <- MRFcov_spatial(data = analysis.data, 
+tick.mrf.spatial <- MRFcov_spatial(data = data_for_mrf_nonSpatial, 
                                     n_nodes = nodes, family = 'binomial',
-                                    coords = coords, n_cores = 3)
-spatial.predictions <- predict_MRF(data = moose.crf.spatial$mrf_data,
+ 
+                                   coords = coords, n_cores = 4)
+
+saveRDS(tick.mrf.spatial, "FINAL_model")
+
+FINAL_model <- readRDS('FINAL_model')
+
+library(igraph)
+
+net <- graph.adjacency(tick.mrf.spatial $graph, weighted = T, mode = "undirected")
+
+net_simplified_pos <- delete_edges(net, which(E(net)$weight< 0.3))
+
+igraph::plot.igraph(net_simplified_pos, layout = igraph::layout_with_mds(net_simplified_pos, dim=2),
+                    edge.width = abs(igraph::E(net_simplified_pos)$weight*2),
+                    vertex.size = 1,
+                    vertex.color = 'black',
+                    vertex.label.cex = 0.6,
+                    vertex.label.font=3,
+                    vertex.label.color='black',
+                    edge.color = ifelse(igraph::E(net_simplified_pos)$weight < 0, 
+                                        'blue',
+                                        'red'))
+
+net_simplified_neg <- delete_edges(net, which(E(net)$weight> -0.1))
+
+igraph::plot.igraph(net_simplified_neg , layout = igraph::layout_with_mds(net_simplified_neg , dim=2),
+                    edge.width = abs(igraph::E(net_simplified_neg )$weight*2),
+                    vertex.size = 2,
+                    vertex.color = 'black',
+                    vertex.label.cex = 0.6,
+                    vertex.label.font=3,
+                    vertex.label.color='black',
+                    edge.color = ifelse(igraph::E(net_simplified_neg )$weight < 0, 
+                                        'blue',
+                                        'red'))
+
+
+spatial.predictions <- predict_MRF(data = tick.mrf.spatial$mrf_data,
                                    prep_covariates = F,
-                                   MRF_mod = moose.crf.spatial)
+                                   MRF_mod = tick.mrf.spatial)
+
 spatial.cv <- lapply(seq_len(100), function(x){
-  cv_MRF_diag(data = analysis.data, n_nodes = nodes,
+  cv_MRF_diag(data = data_for_mrf_nonSpatial, n_nodes = nodes,
               n_folds = 5,
-              n_cores = 2, family = 'binomial',
+              n_cores = 4, family = 'binomial',
               compare_null = FALSE, plot = FALSE,
-              cached_model = moose.crf.spatial,
+              cached_model = tick.mrf.spatial ,
               cached_predictions = list(predictions = spatial.predictions),
               sample_seed = 10)
 })
 spatial.cv <- do.call(rbind, spatial.cv)
 
-#' 
-#' \pagebreak
-#' 
+#' Next, we repeat the above for a nspatial CRF (including environmental covariates with splines)
+## ------------------------------------------------------------------------
+# Prep the data
+
+
+# Fit the model
+tick_crf_spatial <- MRFcov_spatial(data =data_for_crf_non_spatial, n_nodes = nodes, family = 'binomial',
+                               prep_covariates = FALSE, n_covariates = n_covariates, coords=coords,
+                                                              n_cores = 4)
+saveRDS(tick_crf_spatial, 'tick_crf_spatial') 
+
+tick_crf_spatial <- readRDS('tick_crf_spatial')
+# Inspect outputs
+crf$intercepts
+plotMRF_hm(tick_crf_spatial )
+
+#taxa of interest
+tick_crf_spatial$key_coefs$Borreliella 
+tick_crf_spatial$key_coefs$Borrelia 
+tick_crf_spatial$key_coefs$Anaplasma
+tick_crf_spatial$key_coefs$Ehrlichia 
+tick_crf_spatial$key_coefs$Francisella 
+tick_crf_spatial$key_coefs$Lawsonella
+tick_crf_spatial$key_coefs$Rickettsia 
+
+tick_crf_spatial$key_coefs$Wolbachia
+#secondary importance
+tick_crf_spatial$key_coefs$Bacillus
+tick_crf_spatial$key_coefs$Corynebacterium
+tick_crf_spatial$key_coefs$Legionella 
+tick_crf_spatial$key_coefs$Mycobacterium
+tick_crf_spatial$key_coefs$Streptococcus 
+tick_crf_spatial$key_coefs$Pseudomonas
+tick_crf_spatial$key_coefs$Ralstonia
+tick_crf_spatial$key_coefs$Rhodococcus
+tick_crf_spatial$key_coefs$Sphingomonas
+tick_crf_spatial$key_coefs$Staphylococcus
+tick_crf_spatial$key_coefs$Streptomyces
+
+crf.spatial.predictions <- predict_MRF(data = tick_crf_spatial$mrf_data,
+                                       prep_covariates = F,
+                               MRF_mod = tick_crf_spatial)
+
+crf.cv.spatial <- lapply(seq_len(100), function(x){
+  cv_MRF_diag(data = tick_crf_spatial$mrf_data, n_nodes = nodes,
+              n_folds = 5,
+              n_cores = 4, family = 'binomial',
+              compare_null = FALSE, plot = FALSE,
+              cached_model = tick_crf_spatial,
+              cached_predictions = list(predictions = crf.spatial.predictions),
+              sample_seed = 10)
+})
+crf.cv.spatial <- do.call(rbind, crf.cv.spatial)
+
+cov.imp.mean <- lapply(seq_along(tick_crf_spatial$indirect_coefs), function(x){
+  graph <- tick_crf_spatial$indirect_coefs[[x]][[1]]
+  coefs <- graph[upper.tri(graph)]
+  round(mean(abs(coefs[which(coefs != 0 )])), 4)
+})
+impData <- cbind(cov.imp.mean, names(analysis.data))
+
+
 #' Now that we have run all of the models and generated predictions, we can examine the proportion of unique observations that were correctly predicted by each of the different models
 ## ------------------------------------------------------------------------
 quantile(mrf.cv$mean_tot_pred, probs = c(0.025, 0.5, 0.975))
 quantile(crf.cv$mean_tot_pred, probs = c(0.025, 0.5, 0.975))
 quantile(spatial.cv$mean_tot_pred, probs = c(0.025, 0.5, 0.975))
+quantile(crf.cv.spatial$mean_tot_pred, probs = c(0.025, 0.5, 0.975))
+
+quantile(crf.cv$Wolbachia, probs = c(0.025, 0.5, 0.975))
+
+mrf.cv$model <- "MRF"
+crf.cv$model <- "CRF"
+spatial.cv$model <- "Spatial MRF"
+crf.cv.spatial$model <- "Spatial CRF"
+plot.dat <- rbind(mrf.cv, crf.cv, spatial.cv,
+                  crf.cv.spatial)
+plot.dat$model <- factor(plot.dat$model,
+                         levels = c("MRF", "Spatial MRF", "CRF",
+                                    "Spatial CRF"))
+scaleFUN <- function(x) sprintf("%.2f", x)
+preds.plot <- ggplot(plot.dat, aes(model,
+                                   mean_tot_pred, colour = model)) + geom_boxplot() +
+  labs(y = "True predictions", x = "") +
+  scale_y_continuous(labels = scaleFUN,
+                     breaks = seq(min(plot.dat$mean_tot_pred),
+                                  max(plot.dat$mean_tot_pred),
+                                  length.out = 5)) + theme_classic() +
+  theme(legend.position = "")
+spec.plot <- ggplot(plot.dat, aes(model,
+                                  mean_specificity, colour = model)) +
+  geom_boxplot() + labs(y = "Specificity",
+                        x = "") + scale_y_continuous(labels = scaleFUN,
+                                                     breaks = seq(min(plot.dat$mean_specificity),
+                                                                  max(plot.dat$mean_specificity), length.out = 5)) +
+  theme_classic() + theme(legend.position = "")
+sens.plot <- ggplot(plot.dat, aes(model,
+                                  mean_sensitivity, colour = model)) +
+  geom_boxplot() + labs(y = "Sensitivity",
+                        x = "Model") + scale_y_continuous(labels = scaleFUN,
+                                                          breaks = seq(min(plot.dat$mean_sensitivity),
+                                                                       max(plot.dat$mean_sensitivity), length.out = 5)) +
+  theme_classic() + theme(legend.position = "")
+ppv.plot <- ggplot(plot.dat, aes(model, mean_pos_pred,
+                                 colour = model)) + geom_boxplot() + labs(y = "PPV",
+                                                                          x = "") + theme_classic() + scale_y_continuous(labels = scaleFUN,
+                                                                                                                         breaks = seq(min(plot.dat$mean_pos_pred),
+                                                                                                                                      max(plot.dat$mean_pos_pred), length.out = 5)) +
+  theme(legend.position = "")
+
+gridExtra:: grid.arrange(ppv.plot, spec.plot,sens.plot, ncol = 3)
 
 
+library(igraph)
+net <- graph.adjacency(tick_crf_spatial$graph, weighted = T, mode = "undirected")
+
+net_simplified_pos <- delete_edges(net, which(E(net)$weight< 0.2))
+
+plot.igraph(net_simplified_pos, layout = igraph::layout_with_mds(net_simplified_pos, dim=2),
+            edge.width = abs(igraph::E(net_simplified_pos)$weight*4),
+            vertex.size = 2,
+            vertex.color = 'black',
+            vertex.label.cex = 0.4,
+            vertex.label.font=1,
+            vertex.label.color='black',
+            edge.color = ifelse(igraph::E(net_simplified_pos)$weight < 0, 
+                                'blue',
+                                'red'))
+
+net_simplified_neg <- delete_edges(net, which(E(net)$weight> -0.05))
+
+igraph::plot.igraph(net_simplified_neg , layout = igraph::layout_with_mds(net_simplified_neg , dim=2),
+                    edge.width = abs(igraph::E(net_simplified_neg )$weight*4),
+                    vertex.size = 2,
+                    vertex.color = 'black',
+                    vertex.label.cex = 0.4,
+                    vertex.label.font=3,
+                    vertex.label.color='black',
+                    edge.color = ifelse(igraph::E(net_simplified_neg )$weight < 0, 
+                                        'blue',
+                                        'red'))
 
 
+#based on these results we'll choose the spatial MRF as it has higher performance
+tick.bootstrap.spatial <- bootstrap_MRF(data = data_for_mrf_nonSpatial,
+                                         n_nodes = nodes, family = 'binomial',
+                                         spatial = TRUE,
+                                         coords = coords, 
+                                         n_cores = 5,
+                                         n_bootstraps = 100)
 
 
+#for CRF
+tick.bootstrap.spatial.crf <- bootstrap_MRF(data = data_for_crf_non_spatial,
+                                        n_nodes = nodes, family = 'binomial',
+                                        n_covariates = n_covariates,
+                                        spatial = TRUE,
+                                        coords = coords, 
+                                        n_cores = 4,
+                                        n_bootstraps = 50)
 
+saveRDS(tick.bootstrap.spatial.crf, 'tick.bootstrap.spatial.crf' )
+
+tick.bootstrap.spatial <- readRDS('tick.bootstrap.spatial')
+#things to do. 
+#Add more species
+#work out a way to plot networks 
+tick.bootstrap.spatial$indirect_coef_mean
+plotMRF_hm(MRF_mod = tick.bootstrap.spatial )
+save(tick.bootstrap.spatial ,file="tick.bootstrap.spatial.RData")
+
+#look at some ASVs
+tick.bootstrap.spatial$mean_key_coefs$Borreliella #one group of interest
+
+tick.bootstrap.spatial$mean_key_coefs$Wolbachia #one group of interest - only shaped by  Streptococcus
+tick.bootstrap.spatial$mean_key_coefs$Borrelia #Massilia is by far the most important predictor
+
+tick.bootstrap.spatial$mean_key_coefs$Anaplasma
+
+str(tick.bootstrap.spatial$direct_coef_upper90)
+str(tick.bootstrap.spatial)
+
+summary(tick.bootstrap.spatial)
+net <- igraph::graph.adjacency(tick.bootstrap.spatial$graph, weighted = T, mode = "undirected")
+igraph::plot.igraph(net, layout = igraph::layout_with_mds(net, dim=2),
+                    edge.width = abs(igraph::E(net)$weight),
+                    vertex.size = 2,
+                    vertex.color = 'black',
+                    vertex.label.cex = 0.7,
+                    edge.color = ifelse(igraph::E(net)$weight < 0, 
+                                        'blue',
+                                        'red'))
+
+adj_mats <- predict_MRFnetworks(data = data_for_mrf_nonSpatial[1:nodes, ],
+                                MRF_mod = tick.bootstrap.spatial,
+                                metric = 'degree',
+                                cutoff = 0.33,
+                                prep_covariates=F
+)
+colnames(adj_mats) <- colnames(data_for_mrf_nonSpatial[, 1:nodes])
+apply(adj_mats, 2, summary)
 
 #-----------------------------------------------------------------------------
 #################HMSC Analysis s#################
